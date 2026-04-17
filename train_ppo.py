@@ -51,18 +51,18 @@ class Args:
         exp_name_parts = [self.exp_name]
 
         if self.ground != 0:
-            exp_name_parts.append('G'+str(self.ground).replace('.', ''))
+            exp_name_parts.append('G'+str(self.ground).replace('.', 'p'))
 
         if self.lateral != 0:
-            exp_name_parts.append('L'+str(self.lateral).replace('.', ''))
+            exp_name_parts.append('L'+str(self.lateral).replace('.', 'p'))
 
         if self.overhead != 0:
-            exp_name_parts.append('O'+str(self.overhead).replace('.', ''))
+            exp_name_parts.append('O'+str(self.overhead).replace('.', 'p'))
 
-        exp_name_parts.append(f"T{str(self.term_collision_threshold).replace('.', '')}")
+        exp_name_parts.append(f"T{str(self.term_collision_threshold).replace('.', 'p')}")
 
         if self.obs_path:
-            exp_name_parts.append(self.obs_path.replace('/', '').replace('_', ''))
+            exp_name_parts.append(self.obs_path.split('/')[-1])
 
         return "x".join(exp_name_parts)
 

@@ -7,7 +7,7 @@ python_executable = sys.executable
 
 tasks = [
     # cuda_device, task, exp_name, restore_name, ground, lateral, overhead, obs_path, term_collision_threshold
-    (0, "G1Cat", "debug_", 'none', 0., 0., 0., "empty", 0.0),
+    (0, "G1Cat", "0417testV0_", 'none', 0., 0., 0., "data/assets/TypiObs/empty", 0.0),
 
 ]
 

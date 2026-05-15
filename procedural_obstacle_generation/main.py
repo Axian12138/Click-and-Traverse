@@ -116,6 +116,8 @@ def generate_pf(scene_type, pc_path, grid_config_path=None):
     mask_bar = obs_mask[:, :, :z_bar_thresh] == 1
     filled = np.cumsum(mask_bar[:, :, ::-1], axis=2)[:, :, ::-1] > 0
     obs_mask[:, :, :z_bar_thresh] = filled.astype(np.uint8)
+    # obs_mask[:,0] = 1
+    # obs_mask[:,-1] = 1
 
     os.makedirs(f"../data/assets/R2SObs/{prefix}", exist_ok=True)
     pts = occupancy_to_points(obs_mask, voxel_size=cfg.voxel)
@@ -141,9 +143,9 @@ def generate_pf(scene_type, pc_path, grid_config_path=None):
 
 
 def better_mesh(spacing, obs_mask): # for mujoco visualization
-    obs_mask[:,0,:] = 0
-    obs_mask[:,-1,:] = 0
-    obs_mask[:,:,-1] = 0
+    # obs_mask[:,0,:] = 0
+    # obs_mask[:,-1,:] = 0
+    # obs_mask[:,:,-1] = 0
     obs_mask_erosion = 1-obs_mask
     mesh = marching_cubes_mesh(obs_mask_erosion, spacing=spacing)
     return mesh
@@ -186,4 +188,4 @@ if __name__ == "__main__":
     # generate_typical_obstacle('hole')
     # generate_random_obstacle(0.4, 13, 2, 1, 1)
     # generate_random_obstacle(0.8, 4, 1, 0, 1)
-    generate_pf('oav_hard0', '/home/galbot/workspace/oav/short/tasks/hard/scene_0000_diff80_seed20260410/export/scene.voxel.npy', '/home/galbot/workspace/oav/short/tasks/hard/scene_0000_diff80_seed20260410/export/scene.voxel.meta.yaml')
+    generate_pf('oavHard0', '/home/galbot/workspace/oav/short/tasks/hard/scene_0000_diff80_seed202604116/export/scene.voxel.npy', '/home/galbot/workspace/oav/short/tasks/hard/scene_0000_diff80_seed202604116/export/scene.voxel.meta.yaml')

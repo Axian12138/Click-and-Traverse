@@ -111,6 +111,8 @@ class SamplePFWrapper(wrapper.Wrapper):
         phase_dt = jnp.where(done, state_reset.info["phase_dt"], state.info["phase_dt"])
         gait_freq = jnp.where(done, state_reset.info["gait_freq"], state.info["gait_freq"])
         foot_height = jnp.where(done, state_reset.info["foot_height"], state.info["foot_height"])
+        if "pf_id" in state.info:
+            state.info["pf_id"] = jnp.where(done, state_reset.info["pf_id"], state.info["pf_id"])
         state.info.update(
             {
                 "rng": state_reset.info["rng"],
@@ -153,4 +155,3 @@ def wrap_for_brax_training_reset(
     env = wrapper.BraxAutoResetWrapper(env)
     env = SamplePFWrapper(env)
     return env
-

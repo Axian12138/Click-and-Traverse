@@ -186,7 +186,6 @@ def train(args: Args):
     task_cfg = cat_ppo.registry.get(args.task, "config")
     env_cfg = task_cfg.env_config
     policy_cfg = task_cfg.policy_config
-    eval_config = task_cfg.eval_config
 
     exp_name = _prepare_exp_name(args.task, args.generate_exp_name())
     debug_mode = "debug" in exp_name

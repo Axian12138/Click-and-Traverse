@@ -122,10 +122,10 @@ def g1_loco_task_config() -> config_dict.ConfigDict:
         torso_height=[0.5, consts.DEFAULT_CHEST_Z],
         pf_config=config_dict.create(
             dx=0.04,
-            # path='data/assets/TypiObs/empty', # NOTE
-            # origin=np.array([-0.5, -1.0, 0.0], dtype=np.float32),
-            path='data/assets/R2SObs/Mhurdle', # NOTE
-            origin=np.array([-2.56, -2.56, 0.0], dtype=np.float32),
+            path='data/assets/TypiObs/empty', # NOTE
+            origin=[-0.5, -1.0, 0.0],
+            # path='data/assets/R2SObs/Mhurdle', # NOTE
+            # origin=[-2.56, -2.56, 0.0],
         ),
     )
 
@@ -1111,9 +1111,16 @@ class G1CatEnv(G1LocoEnv):
             "smoothness_joint": self._cost_smoothness_joint(data, info["last_joint_vel"]),
             "smoothness_action": self._cost_smoothness_action(action, info["last_act"], info["last_last_act"]),
             # field
-            "headgf": self._re_gf0(info["headgf"], info["head_vel"], info["headdf"], (move_flag[None]<0.5) | (info["head_pos"][...,0] > 1.5), tau=0.5),
-            "feetgf": self._re_gf0(info["feetgf"], info["feet_vel"], info["feetdf"], (move_flag[None]<0.5) | (info["gait_mask"] == 1) | (info["feet_pos"][...,0] > 1.5), tau=0.3),
-            "handsgf": self._re_gf0(info["handsgf"], info["hands_vel"], info["handsdf"], (move_flag[None]<0.5) | (info["hands_pos"][...,0] > 1.5), tau=0.5),
+            # "headgf": self._re_gf0(info["headgf"], info["head_vel"], info["headdf"], (move_flag[None]<0.5) | (info["head_pos"][...,0] > 1.5), tau=0.5),
+            # "feetgf": self._re_gf0(info["feetgf"], info["feet_vel"], info["feetdf"], (move_flag[None]<0.5) | (info["gait_mask"] == 1) | (info["feet_pos"][...,0] > 1.5), tau=0.3),
+            # "handsgf": self._re_gf0(info["handsgf"], info["hands_vel"], info["handsdf"], (move_flag[None]<0.5) | (info["hands_pos"][...,0] > 1.5), tau=0.5),
+
+            "headgf": self._re_gf0(info["headgf"], info["head_vel"], info["headdf"],
+                                   (move_flag[None] < 0.5) , tau=0.5),
+            "feetgf": self._re_gf0(info["feetgf"], info["feet_vel"], info["feetdf"],
+                                   (move_flag[None] < 0.5) | (info["gait_mask"] == 1) , tau=0.3),
+            "handsgf": self._re_gf0(info["handsgf"], info["hands_vel"], info["handsdf"],
+                                    (move_flag[None] < 0.5) , tau=0.5),
             "headdf": self._re_sdf(info["headdf"]),
             "feetdf": self._re_sdf(info["feetdf"]),
             "handsdf": self._re_sdf(info["handsdf"]), # NOTE
@@ -1145,6 +1152,50 @@ class G1CatEnv(G1LocoEnv):
         reward_near = jp.where(crossed, alpha_align*0.8, reward_near)
 
         return jp.mean(reward_near) 
+    
+    def _re_gf0_far_baseline(self, gf_vel: jax.Array, lin_vel: jax.Array, sdf: jax.Array, crossed: jax.Array, tau=0.3) -> jax.Array:
+        """Guidance-field alignment reward with a far-field baseline.
+
+        Fixes the wall-hugging problem in _re_gf0: in open areas (SDF >> tau),
+        the original reward is ~0, creating an incentive to approach walls.
+        This variant provides a weaker alignment reward in the far field so
+        the robot is still guided toward the goal without needing to approach
+        walls.
+
+        Far-field reward = alpha_align * (beta_base + beta_align * cos_align):
+          - beta_base (0.5): constant floor so the far-field reward stays
+            positive even when moving perpendicular to the field.
+          - beta_align (0.3): mild directional incentive in the far field.
+          - Max far-field reward = alpha_align * 0.8, matching the crossed
+            baseline, so there is no incentive to approach walls for extra
+            reward.
+
+        Reward behavior:
+          - Far from surfaces (SDF >> tau):  alpha_align * (0.5 + 0.3*cos)  (weak guidance)
+          - Near obstacle (SDF < tau):       alpha_align * cos_align         (full field guidance)
+          - Crossed obstacle region:         alpha_align * 0.8               (fixed)
+        """
+        eps = 1e-6
+
+        k_window    = 40.0
+        alpha_align = 5.0
+        beta_base   = 0.5
+        beta_align  = 0.3
+
+        g_norm = gf_vel / (jp.linalg.norm(gf_vel, axis=-1, keepdims=True) + eps)
+        v_norm = lin_vel / (jp.linalg.norm(lin_vel, axis=-1, keepdims=True) + eps)
+        cos_align = jp.sum(g_norm * v_norm, axis=-1)
+
+        sdf_flat = sdf.reshape(-1)
+        window = jax.nn.sigmoid(k_window * (tau - sdf_flat))
+
+        reward_near = window * (alpha_align * cos_align)
+        reward_far  = (1 - window) * alpha_align * (beta_base + beta_align * cos_align)
+        reward = reward_near + reward_far
+
+        reward = jp.where(crossed, alpha_align * 0.8, reward)
+
+        return jp.mean(reward)
 
     def _re_sdf(self, sdf: jax.Array, sdf_safe = 0.05) -> jax.Array:
         beta_inside = 0.02  

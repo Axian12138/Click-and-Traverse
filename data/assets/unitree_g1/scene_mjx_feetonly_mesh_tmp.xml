@@ -28,14 +28,14 @@
           <texture name="tex_brick_cube" type="2d" file="texture.png" />
 
           <material name="mat_brick_cube" texture="tex_brick_cube" reflectance="0.10" specular="0.20" shininess="0.30" />
-        <mesh name="scene_mesh" file="../R2SObs/oav_test0/obs.obj" />
+        <mesh name="scene_mesh" file="../TypiObs/side-hurdle3/obs.obj" />
     </asset>
 
     <worldbody>
         <light name="key" pos="0 0 5" dir="0 0 -1" directional="true" />
         <light name="fill" pos="3 -3 3" dir="-1 1 -1" directional="true" />
         
-        <body name="scene" pos="-0.5 -1.26 0">
+        <body name="scene" pos="-0.5 -1.0 0">
           <geom type="mesh" mesh="scene_mesh" rgba="0.7 0.7 0.7 1" contype="1" conaffinity="1" material="mat_brick_cube" />
         </body>
         <geom name="floor" size="0 0 0.01" type="plane" material="groundplane" />

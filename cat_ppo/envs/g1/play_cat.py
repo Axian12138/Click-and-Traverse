@@ -433,6 +433,7 @@ class PlayG1CatEnv(BaseEnv):
         headdf, pelvdf, torsdf, feetdf, handsdf, kneesdf, shldsdf = np.split(all_df, [1,2,3,5,7,9], axis=0)
         command = self.compute_cmd_from_rtf(pelvgf.reshape(-1), np.concat([headgf, feetgf, handsgf]), np.concat([headbf, feetbf, handsbf]))
         state.info["command"] = command.copy()
+        print(command,pelvgf,pelv_pos)
         self._update_phase(state)
         move_flag = state.info["last_flags"][1]
         all_gf = all_gf * (move_flag[None] > 0.5) / (np.linalg.norm(all_gf, axis=-1, keepdims=True) + EPS)

@@ -13,5 +13,5 @@
 # limitations under the License.
 # ==============================================================================
 
-from cat_ppo.envs.g1 import env_loco, env_cat_pri, env_cat, env_cat_loco
+from cat_ppo.envs.g1 import env_loco, env_cat_pri, env_cat, env_cat_loco, env_cat_dagger, env_cat_long
 from cat_ppo.envs.g1 import play_cat

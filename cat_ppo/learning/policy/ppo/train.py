@@ -185,6 +185,75 @@ def _remove_pixels(
     return {k: v for k, v in obs.items() if not k.startswith("pixels/")}
 
 
+def _cfg_get(config: Optional[Any], name: str, default: Any = None) -> Any:
+    if config is None:
+        return default
+    if isinstance(config, Mapping):
+        return config.get(name, default)
+    return getattr(config, name, default)
+
+
+def _stack_trees(trees):
+    return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *trees)
+
+
+def _assert_same_tree_shapes(label: str, expected: Any, actual: Any):
+    expected_leaves, expected_def = jax.tree_util.tree_flatten(expected)
+    actual_leaves, actual_def = jax.tree_util.tree_flatten(actual)
+    if expected_def != actual_def:
+        raise ValueError(f"{label} pytree structure does not match the student policy")
+    for idx, (expected_leaf, actual_leaf) in enumerate(zip(expected_leaves, actual_leaves)):
+        if np.shape(expected_leaf) != np.shape(actual_leaf):
+            raise ValueError(
+                f"{label} leaf {idx} shape mismatch: expected {np.shape(expected_leaf)}, "
+                f"got {np.shape(actual_leaf)}"
+            )
+
+
+def compute_dagger_loss(
+    params: ppo_losses.PPONetworkParams,
+    normalizer_params: Any,
+    data: types.Transition,
+    rng: jnp.ndarray,
+    ppo_network: ppo_networks.PPONetworks,
+    teacher_normalizer_params: Any,
+    teacher_policy_params: Any,
+    num_teachers: int,
+    kl_eps: float = 1e-5,
+) -> Tuple[jnp.ndarray, types.Metrics]:
+    del rng
+    policy_apply = ppo_network.policy_network.apply
+    parametric_action_distribution = ppo_network.parametric_action_distribution
+
+    data = jax.tree_util.tree_map(lambda x: jnp.swapaxes(x, 0, 1), data)
+    student_logits = policy_apply(normalizer_params, params.policy, data.observation)
+
+    def teacher_apply(teacher_normalizer, teacher_policy):
+        return policy_apply(teacher_normalizer, teacher_policy, data.observation)
+
+    teacher_logits_all = jax.vmap(teacher_apply)(teacher_normalizer_params, teacher_policy_params)
+    pf_id = data.extras["state_extras"]["pf_id"].astype(jnp.int32)
+    pf_id = jnp.clip(pf_id, 0, num_teachers - 1)
+    teacher_weight = jax.nn.one_hot(pf_id, num_teachers, dtype=student_logits.dtype)
+    teacher_logits = jnp.einsum("tbn,ntba->tba", teacher_weight, teacher_logits_all)
+
+    student_dist = parametric_action_distribution.create_dist(student_logits)
+    teacher_dist = parametric_action_distribution.create_dist(teacher_logits)
+    student_std = jnp.maximum(student_dist.scale, kl_eps)
+    teacher_std = jnp.maximum(teacher_dist.scale, kl_eps)
+    log_term = jnp.log(teacher_std / student_std + kl_eps)
+    numerator = jnp.square(student_std) + jnp.square(student_dist.loc - teacher_dist.loc)
+    denominator = 2.0 * jnp.square(teacher_std)
+    dagger_kl = jnp.sum(log_term + numerator / denominator - 0.5, axis=-1)
+    total_loss = jnp.mean(dagger_kl)
+    return total_loss, {
+        "total_loss": total_loss,
+        "dagger_kl": total_loss,
+        "student_std": jnp.mean(student_std),
+        "teacher_std": jnp.mean(teacher_std),
+    }
+
+
 def train(
     environment: envs.Env,
     num_timesteps: int,
@@ -237,6 +306,7 @@ def train(
     restore_checkpoint_path: Optional[str] = None,
     restore_params: Optional[Any] = None,
     restore_value_fn: bool = False,
+    dagger_config: Optional[Any] = None,
 ):
     """PPO training.
 
@@ -388,6 +458,21 @@ def train(
     )
     make_policy = ppo_networks.make_inference_fn(ppo_network)
 
+    use_dagger = bool(_cfg_get(dagger_config, "enable", False))
+    teacher_checkpoint_paths = list(_cfg_get(dagger_config, "teacher_checkpoint_paths", []))
+    teacher_params = ()
+    teacher_normalizer_params = None
+    teacher_policy_params = None
+    if use_dagger:
+        loss_name = _cfg_get(dagger_config, "loss", "kl")
+        if loss_name != "kl":
+            raise ValueError(f"Unsupported DAgger loss: {loss_name!r}; only 'kl' is implemented")
+        if not teacher_checkpoint_paths:
+            raise ValueError("dagger_config.enable=True requires teacher_checkpoint_paths")
+        teacher_params = tuple(checkpoint.load(path) for path in teacher_checkpoint_paths)
+        teacher_normalizer_params = _stack_trees([params[0] for params in teacher_params])
+        teacher_policy_params = _stack_trees([params[1] for params in teacher_params])
+
     optimizer = optax.adam(learning_rate=learning_rate)
     if max_grad_norm is not None:
         optimizer = optax.chain(
@@ -395,16 +480,26 @@ def train(
             optax.adam(learning_rate=learning_rate),
         )
 
-    loss_fn = functools.partial(
-        ppo_losses.compute_ppo_loss,
-        ppo_network=ppo_network,
-        entropy_cost=entropy_cost,
-        discounting=discounting,
-        reward_scaling=reward_scaling,
-        gae_lambda=gae_lambda,
-        clipping_epsilon=clipping_epsilon,
-        normalize_advantage=normalize_advantage,
-    )
+    if use_dagger:
+        loss_fn = functools.partial(
+            compute_dagger_loss,
+            ppo_network=ppo_network,
+            teacher_normalizer_params=teacher_normalizer_params,
+            teacher_policy_params=teacher_policy_params,
+            num_teachers=len(teacher_checkpoint_paths),
+            kl_eps=_cfg_get(dagger_config, "kl_eps", 1e-5),
+        )
+    else:
+        loss_fn = functools.partial(
+            ppo_losses.compute_ppo_loss,
+            ppo_network=ppo_network,
+            entropy_cost=entropy_cost,
+            discounting=discounting,
+            reward_scaling=reward_scaling,
+            gae_lambda=gae_lambda,
+            clipping_epsilon=clipping_epsilon,
+            normalize_advantage=normalize_advantage,
+        )
 
     gradient_update_fn = gradients.gradient_update_fn(
         loss_fn, optimizer, pmap_axis_name=_PMAP_AXIS_NAME, has_aux=True
@@ -492,13 +587,16 @@ def train(
         def f(carry, unused_t):
             current_state, current_key = carry
             current_key, next_key = jax.random.split(current_key)
+            extra_fields = ("truncation", "episode_metrics", "episode_done")
+            if use_dagger:
+                extra_fields = extra_fields + ("pf_id",)
             next_state, data = acting.generate_unroll(
                 env,
                 current_state,
                 policy,
                 current_key,
                 unroll_length,
-                extra_fields=("truncation", "episode_metrics", "episode_done"),
+                extra_fields=extra_fields,
             )
             return (next_state, next_key), data
 
@@ -594,6 +692,13 @@ def train(
         policy=ppo_network.policy_network.init(key_policy),
         value=ppo_network.value_network.init(key_value),
     )
+    if use_dagger:
+        for teacher_idx, loaded_params in enumerate(teacher_params):
+            _assert_same_tree_shapes(
+                f"DAgger teacher {teacher_idx} policy params",
+                init_params.policy,
+                loaded_params[1],
+            )
 
     obs_shape = jax.tree_util.tree_map(
         lambda x: specs.Array(x.shape[-1:], jnp.dtype("float32")), env_state.obs
@@ -606,6 +711,13 @@ def train(
         normalizer_params=running_statistics.init_state(_remove_pixels(obs_shape)),
         env_steps=types.UInt64(hi=0, lo=0),
     )
+    if use_dagger:
+        for teacher_idx, loaded_params in enumerate(teacher_params):
+            _assert_same_tree_shapes(
+                f"DAgger teacher {teacher_idx} normalizer params",
+                training_state.normalizer_params,
+                loaded_params[0],
+            )
 
     if restore_checkpoint_path is not None:
         params = checkpoint.load(restore_checkpoint_path)

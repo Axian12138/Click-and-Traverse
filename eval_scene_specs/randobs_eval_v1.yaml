@@ -1,0 +1,24 @@
+# Held-out procedural random-obstacle evaluation split for generalist v1.
+# This file stores generation parameters only. It does not include scene assets.
+#
+# Scene names follow:
+#   D{difficulty*10}G{ground_count}L{lateral_count}O{overhead_count}S{seed}
+#
+# Recreate this split with:
+#   python -m cat_ppo.eval.mj_onnx_test --task G1Cat --generate-eval-set --generate-only \
+#     --eval-root data/assets/RandObsEval \
+#     --eval-difficulties 0.6 0.7 0.8 0.9 \
+#     --eval-seeds 101 102 103 104 105 106 107 108 109 110 \
+#     --eval-ground-counts 1 2 3 \
+#     --eval-lateral-counts 1 3 \
+#     --eval-overhead-counts 1 2
+
+name: randobs_eval_v1
+output_root: data/assets/RandObsEval
+grid_config_path: null
+difficulties: [0.6, 0.7, 0.8, 0.9]
+seeds: [101, 102, 103, 104, 105, 106, 107, 108, 109, 110]
+ground_counts: [1, 2, 3]
+lateral_counts: [1, 3]
+overhead_counts: [1, 2]
+num_scenes: 480

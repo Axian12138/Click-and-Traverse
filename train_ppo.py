@@ -24,6 +24,9 @@ import cat_ppo
 from cat_ppo import update_file_handler
 from cat_ppo.constant import PATH_LOG
 from cat_ppo.learning.policy.ppo import train as ppo # brax.training.agents.ppo
+from cat_ppo.learning.policy.ppo.humanoid_transformer_networks import (
+    make_humanoid_transformer_ppo_networks,
+)
 from cat_ppo.learning.train.pf_utils import wrap_for_brax_training_reset
 
 xla_flags = os.environ.get("XLA_FLAGS", "")
@@ -41,6 +44,7 @@ class Args:
     task: str
     exp_name: str = "debug"
     num_timesteps: int = 400_000_000
+    num_evals: int = 0
     seed: int = 42
     convert_onnx: bool = True
     restore_name: str = "none"
@@ -50,6 +54,13 @@ class Args:
     term_collision_threshold: float = 0.04
     obs_path: str = 'data/assets/TypiObs/empty'
     randomize_initial_episode_steps: bool = True
+    network_kind: str = "mlp"
+    policy_hidden_layer_sizes: list[int] | None = None
+    value_hidden_layer_sizes: list[int] | None = None
+    transformer_embed_dim: int = 256
+    transformer_num_heads: int = 4
+    transformer_ff_dim: int = 512
+    transformer_num_layers: int = 4
     def generate_exp_name(self):
         exp_name_parts = [self.exp_name]
 
@@ -108,6 +119,8 @@ def _apply_args_to_config(args: Args, policy_cfg, env_config, debug: bool):
         policy_cfg.num_timesteps = 100_000
         policy_cfg.num_resets_per_eval = 1
         policy_cfg.num_eval_envs = 128
+    elif args.num_evals > 0:
+        policy_cfg.num_evals = args.num_evals
     # cfg.restore_checkpoint_path = Path(args.restore_checkpoint_path)
     if args.restore_name != "none":
         from cat_ppo.constant import get_latest_ckpt
@@ -123,14 +136,37 @@ def _apply_args_to_config(args: Args, policy_cfg, env_config, debug: bool):
     env_config.term_collision_threshold = args.term_collision_threshold
     env_config.pf_config.path = args.obs_path
     policy_cfg.randomize_initial_episode_steps = args.randomize_initial_episode_steps
+    policy_cfg.network_factory.network_kind = args.network_kind
+    if args.policy_hidden_layer_sizes:
+        policy_cfg.network_factory.policy_hidden_layer_sizes = tuple(args.policy_hidden_layer_sizes)
+    if args.value_hidden_layer_sizes:
+        policy_cfg.network_factory.value_hidden_layer_sizes = tuple(args.value_hidden_layer_sizes)
+    policy_cfg.network_factory.transformer_embed_dim = args.transformer_embed_dim
+    policy_cfg.network_factory.transformer_num_heads = args.transformer_num_heads
+    policy_cfg.network_factory.transformer_ff_dim = args.transformer_ff_dim
+    policy_cfg.network_factory.transformer_num_layers = args.transformer_num_layers
 
 def _prepare_training_params(cfg, ckpt_path: Path):
     params = cfg.to_dict()
     params.pop("network_factory", None)
     params["wrap_env_fn"] = wrap_for_brax_training_reset #wrapper.wrap_for_brax_training
-    network_fn = make_ppo_networks
+    network_cfg = cfg.network_factory.to_dict()
+    network_kind = network_cfg.pop("network_kind", "mlp")
+    if network_kind == "mlp":
+        network_fn = make_ppo_networks
+        for key in (
+            "transformer_embed_dim",
+            "transformer_num_heads",
+            "transformer_ff_dim",
+            "transformer_num_layers",
+        ):
+            network_cfg.pop(key, None)
+    elif network_kind == "humanoid_transformer":
+        network_fn = make_humanoid_transformer_ppo_networks
+    else:
+        raise ValueError(f"Unsupported network_kind={network_kind!r}")
     params["network_factory"] = (
-        functools.partial(network_fn, **cfg.network_factory)
+        functools.partial(network_fn, **network_cfg)
         if hasattr(cfg, "network_factory")
         else network_fn
     )
@@ -277,6 +313,11 @@ def train(args: Args):
                 action_size=act_size,
                 policy_obs_key=policy_obs_key,
                 jax_params=params,
+                network_kind=policy_cfg.network_factory.get("network_kind", "mlp"),
+                transformer_embed_dim=policy_cfg.network_factory.get("transformer_embed_dim", 256),
+                transformer_num_heads=policy_cfg.network_factory.get("transformer_num_heads", 4),
+                transformer_ff_dim=policy_cfg.network_factory.get("transformer_ff_dim", 512),
+                transformer_num_layers=policy_cfg.network_factory.get("transformer_num_layers", 4),
                 activation="swish",
             )
         except ImportError:

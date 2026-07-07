@@ -13,6 +13,9 @@ from cat_ppo.envs.g1.env_cat import G1CatEnv
 
 
 def _add_dagger_config(config: config_dict.ConfigDict) -> config_dict.ConfigDict:
+    config.policy_config.network_factory.policy_hidden_layer_sizes = (512, 256, 128, 64)
+    config.policy_config.network_factory.value_hidden_layer_sizes = (1024, 512, 256, 128)
+    config.policy_config.entropy_cost = 0.003
     config.policy_config.dagger_config = config_dict.create(
         enable=True,
         loss="kl",
@@ -21,7 +24,7 @@ def _add_dagger_config(config: config_dict.ConfigDict) -> config_dict.ConfigDict
         kl_eps=1e-5,
         dagger_timesteps=0,
         actor_loss_scale=1.0,
-        value_loss_scale=1.0,
+        value_loss_scale=2.0,
         adaptive_pf_sampling=True,
         pf_sampling_alpha=1.0,
         pf_sampling_ema_decay=0.95,
@@ -30,6 +33,12 @@ def _add_dagger_config(config: config_dict.ConfigDict) -> config_dict.ConfigDict
     config.env_config.pf_config.sampling_weights = []
     config.env_config.pf_config.sampling_alpha = 1.0
     config.env_config.pf_config.sampling_ema_decay = 0.95
+    # V8
+    config.policy_config.discounting = 0.98 
+    config.policy_config.unroll_length = 32
+    config.policy_config.num_envs = 32768*2
+    config.policy_config.batch_size = 2048
+    config.policy_config.num_minibatches = 32*2
     return config
 
 

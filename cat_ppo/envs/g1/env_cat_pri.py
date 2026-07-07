@@ -794,7 +794,7 @@ class G1CatPriEnv(G1LocoEnv):
                 info["navi_pelvis_rpy"], info["navi_torso_rpy"], info["head_pos"][2] > (self._config.torso_height[1] + 0.1)
             ),
             "tracking_root_field": self._reward_tracking_root_field(cmd_vel, info["global_lin_vel"]),
-            "body_motion": self._cost_body_motion(info["global_lin_vel"], info["navi_torso_ang_vel"], cmd_vel), # TODO
+            "body_motion": self._cost_body_motion(info["global_lin_vel"], info["navi_torso_ang_vel"], cmd_vel),
             "body_rotation": self._reward_body_rotation(data, cmd_vel, info["navi2world_rot"]),
             "feet_rotation": self._reward_feet_rotation(data, info["navi2world_rot"]),
             "foot_contact": self._cost_foot_contact(data, feet_contact, info["gait_mask"], move_flag),

@@ -11,6 +11,7 @@ Collision-Free Humanoid Traversal in Cluttered Indoor Scenes
  
 ## 进展
 
+- 2026/07/05: 我们发布了 **generalist v1**。这是第一版供大家测试反馈的通用策略，后续会根据大家反馈继续优化 v2。
 - 2026/05/20: 我们开源了**专家到通用策略的蒸馏代码**。
 - 2026/03/07: 我们发布了CAT的**真实部署**代码！详情请参阅deploy/Click-and-Traverse-SLAM。
 - 2026/01/08: 我们发布了CAT的官网实现！
@@ -60,7 +61,7 @@ Collision-Free Humanoid Traversal in Cluttered Indoor Scenes
 - [X] 🚀 真机部署代码
 - [X] 🧩 真机到仿真场景采集（用于验证实验与微调）
 - [X] 🧩 专家到通用策略的蒸馏代码
-- [ ] 🗂️ 预训练通用模型
+- [X] 🗂️ 预训练 generalist v1 模型
 - [ ] 🗂️ 扩展的场景数据集
 
 ---
@@ -134,11 +135,13 @@ Click-and-Traverse/
 ├── data/                           # 资源、日志（检查点）
 │   ├── assets/
 │   |   ├── mujoco_menagerie/       # mj_playground_init 后
-│   |   ├── RandObs/                # 随机障碍
+│   |   ├── RandObs/                # 随机障碍，下载或本地生成
+│   |   ├── RandObsEval/            # 可选 held-out 随机障碍，本地生成
 │   |   ├── TypiObs/                # 典型障碍
 │   |   └── unitree_g1/             # 人形机器人资源
 │   └── logs/
 |       └── G1_mj_axis/             # 下载的检查点
+├── eval_scene_specs/               # 轻量测试场景生成规格
 ├── deploy/                         # 真机部署
 │   ├── gx_loco_deploy/             # 部署helpers
 │   ├── scripts/
@@ -207,6 +210,17 @@ generate_random_obstacle(difficulty, seed, dL, dG, dO)
 
 ## 穿行技能学习
 
+### Generalist v1 版本
+
+我们提供了 **generalist v1**，这是第一版较通用的、由 specialist teachers 蒸馏得到的策略。这个版本主要用于大家测试、复现和反馈失败案例。我们会根据后续收集到的评估结果和 failure cases 持续优化 v2。
+
+当前 generalist v1 的训练集是随机障碍训练 split：
+
+- `data/assets/RandObs/`
+- 当前 release 中包含 42 个生成场景。
+- 具体场景列表和训练配置可以在发布 checkpoint 的配置文件中查看，例如 `data/logs/G1_mj_v2_axis/07020635_G1CatDagger_dagger_v8allD8RandObsX4xG2p0xL1p0xO1p0xT0p0/checkpoints/config.json`。
+
+
 ### 训练 Specialist
 
 ```bash
@@ -262,10 +276,10 @@ python -m cat_ppo.eval.brax2onnx \
 
 ### 评估
 
-评估模型时（无特权观测），运行：
+如果需要交互式单场景播放（无特权观测），运行：
 
 ```bash
-python -m cat_ppo.eval.mj_onnx_play --task G1Cat --exp_name 12051223_G1LocoPFR10_OdonoiseSlowV2_xP2xMxK00xside3 --obs_path data/assets/TypiObs/side3
+python -m cat_ppo.eval.mj_onnx_play --task G1Cat --exp_name 07020635_G1CatDagger_dagger_v8allD8RandObsX4xG2p0xL1p0xO1p0xT0p0 --obs_path data/assets/RandObsEval/D9G2L1O2S110
 ```
 
 评估模型时（有特权观测），运行：
@@ -273,6 +287,46 @@ python -m cat_ppo.eval.mj_onnx_play --task G1Cat --exp_name 12051223_G1LocoPFR10
 ```bash
 python -m cat_ppo.eval.mj_onnx_play --task G1CatPri --pri --exp_name G1CatPri_side1 --obs_path data/assets/TypiObs/side1
 ```
+
+如果需要关闭可视化并批量统计成功率，使用 `mj_onnx_test`：
+
+```bash
+python -m cat_ppo.eval.mj_onnx_test \
+  --task G1Cat \
+  --exp-name 07020635_G1CatDagger_dagger_v8allD8RandObsX4xG2p0xL1p0xO1p0xT0p0 \
+  --obs-root data/assets/RandObs \
+  --episodes 1 \
+  --output-json output_logs/mj_onnx_eval_randobs_train_freshenv.json
+```
+
+评估 held-out 测试集：
+
+```bash
+python -m cat_ppo.eval.mj_onnx_test \
+  --task G1Cat \
+  --exp-name 07020635_G1CatDagger_dagger_v8allD8RandObsX4xG2p0xL1p0xO1p0xT0p0 \
+  --manifest data/assets/RandObsEval/manifest.json \
+  --episodes 1 \
+  --output-json output_logs/mj_onnx_eval_randobs_eval_freshenv.json
+```
+
+如果本地没有 `data/assets/RandObsEval/`，可以根据 `eval_scene_specs/randobs_eval_v1.yaml` 中的轻量规格重新生成。场景名称由生成参数确定，因此用户可以在自己的机器上复现同一测试 split：
+
+```bash
+python -m cat_ppo.eval.mj_onnx_test \
+  --task G1Cat \
+  --generate-eval-set \
+  --generate-only \
+  --eval-root data/assets/RandObsEval \
+  --eval-difficulties 0.6 0.7 0.8 0.9 \
+  --eval-seeds 101 102 103 104 105 106 107 108 109 110 \
+  --eval-ground-counts 1 2 3 \
+  --eval-lateral-counts 1 3 \
+  --eval-overhead-counts 1 2
+```
+
+该命令会将生成资产写入 `data/assets/RandObsEval/`，并创建 `data/assets/RandObsEval/manifest.json`，之后即可传给上面的评估命令。
+
 
 ---
 

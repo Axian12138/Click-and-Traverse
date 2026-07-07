@@ -118,8 +118,8 @@ def onclick(event):
 
 
 if __name__ == '__main__':
-    occ_path = '/home/galbot/workspace/Click-and-Traverse/data/assets/R2SObs/uhln/voxel_1777284034.5574436.npy' # obs_pf_save_path in octomap_bridge.py
-    obj_path = '/home/galbot/workspace/Click-and-Traverse/data/assets/R2SObs/uhln/voxel.npy'
+    occ_path = 'data/assets/R2SObs/uhln/voxel_1777284034.5574436.npy' # obs_pf_save_path in octomap_bridge.py
+    obj_path = 'data/assets/R2SObs/uhln/voxel.npy'
     occ=np.load(occ_path)
     proj = show_topdown(occ)
 

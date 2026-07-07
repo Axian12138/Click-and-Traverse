@@ -1,3 +1,6 @@
+import swanlab
+swanlab.sync_wandb()
+
 import functools
 import json
 import time
@@ -28,6 +31,8 @@ from train_ppo import (
 
 @dataclass
 class DaggerArgs(Args):
+    num_timesteps: int = 5_000_000_000
+    num_evals: int = 16
     teacher_restore_names: list[str] = field(default_factory=list)
     dagger_timesteps: int = 0
     dagger_actor_loss_scale: float = 1.0
@@ -38,6 +43,10 @@ class DaggerArgs(Args):
     network_kind: str = "mlp"
     policy_hidden_layer_sizes: list[int] = field(default_factory=list)
     value_hidden_layer_sizes: list[int] = field(default_factory=list)
+    transformer_embed_dim: int = 256
+    transformer_num_heads: int = 4
+    transformer_ff_dim: int = 512
+    transformer_num_layers: int = 4
 
 
 def _dagger_task_name(task: str) -> str:
@@ -52,6 +61,10 @@ def _checkpoint_config_path(ckpt_path: Path) -> Path:
     if ckpt_path.name == "checkpoints":
         return ckpt_path / "config.json"
     return ckpt_path / "checkpoints" / "config.json"
+
+
+def _network_factory_key(network_factory: dict) -> str:
+    return json.dumps(network_factory, sort_keys=True)
 
 
 def _prepare_dagger_config(policy_cfg, env_config, args: DaggerArgs):
@@ -70,12 +83,21 @@ def _prepare_dagger_config(policy_cfg, env_config, args: DaggerArgs):
         teacher_checkpoint_paths.append(str(ckpt))
 
     scene_paths = []
-    for ckpt in teacher_checkpoint_paths:
+    teacher_network_factory = None
+    for teacher_name, ckpt in zip(teacher_names, teacher_checkpoint_paths):
         config_path = _checkpoint_config_path(Path(ckpt))
         if not config_path.exists():
             raise ValueError(f"Missing teacher config.json for DAgger checkpoint: {ckpt}")
         with config_path.open("r", encoding="utf-8") as f:
             teacher_config = json.load(f)
+        current_teacher_network_factory = teacher_config["policy_config"]["network_factory"]
+        if teacher_network_factory is None:
+            teacher_network_factory = current_teacher_network_factory
+        elif _network_factory_key(current_teacher_network_factory) != _network_factory_key(teacher_network_factory):
+            raise ValueError(
+                "All DAgger teachers must use the same policy_config.network_factory; "
+                f"got mismatch at teacher {teacher_name}"
+            )
         teacher_pf_config = teacher_config["env_config"]["pf_config"]
         teacher_dx = teacher_pf_config.get("dx", env_config.pf_config.dx)
         if float(teacher_dx) != float(env_config.pf_config.dx):
@@ -101,6 +123,7 @@ def _prepare_dagger_config(policy_cfg, env_config, args: DaggerArgs):
     env_config.pf_config.sampling_ema_decay = args.pf_sampling_ema_decay
     dagger_cfg.teacher_restore_names = teacher_names
     dagger_cfg.teacher_checkpoint_paths = teacher_checkpoint_paths
+    dagger_cfg.teacher_network_factory = teacher_network_factory
     dagger_cfg.dagger_timesteps = args.dagger_timesteps or (policy_cfg.num_timesteps // 2)
     if args.dagger_actor_loss_scale <= 0:
         raise ValueError("dagger_actor_loss_scale must be > 0 because DAgger phase should train the actor.")
@@ -109,15 +132,20 @@ def _prepare_dagger_config(policy_cfg, env_config, args: DaggerArgs):
 
 
 def _apply_dagger_network_config(policy_cfg, args: DaggerArgs):
-    if args.network_kind != "mlp":
+    if args.network_kind not in ("mlp", "humanoid_transformer"):
         raise ValueError(
-            f"Unsupported network_kind={args.network_kind!r}. Current Brax PPO rollout is stateless; "
-            "GRU/RNN/Transformer policies need recurrent state support in acting.generate_unroll."
+            f"Unsupported network_kind={args.network_kind!r}. Supported values are "
+            "'mlp' and 'humanoid_transformer'."
         )
+    policy_cfg.network_factory.network_kind = args.network_kind
     if args.policy_hidden_layer_sizes:
         policy_cfg.network_factory.policy_hidden_layer_sizes = tuple(args.policy_hidden_layer_sizes)
     if args.value_hidden_layer_sizes:
         policy_cfg.network_factory.value_hidden_layer_sizes = tuple(args.value_hidden_layer_sizes)
+    policy_cfg.network_factory.transformer_embed_dim = args.transformer_embed_dim
+    policy_cfg.network_factory.transformer_num_heads = args.transformer_num_heads
+    policy_cfg.network_factory.transformer_ff_dim = args.transformer_ff_dim
+    policy_cfg.network_factory.transformer_num_layers = args.transformer_num_layers
 
 
 def train(args: DaggerArgs):
@@ -141,6 +169,10 @@ def train(args: DaggerArgs):
             "network_kind",
             "policy_hidden_layer_sizes",
             "value_hidden_layer_sizes",
+            "transformer_embed_dim",
+            "transformer_num_heads",
+            "transformer_ff_dim",
+            "transformer_num_layers",
         )
     }
     train_args = Args(**{**base_args, "task": task_name})
@@ -200,6 +232,11 @@ def train(args: DaggerArgs):
                 action_size=act_size,
                 policy_obs_key=policy_obs_key,
                 jax_params=params,
+                network_kind=policy_cfg.network_factory.get("network_kind", "mlp"),
+                transformer_embed_dim=policy_cfg.network_factory.get("transformer_embed_dim", 256),
+                transformer_num_heads=policy_cfg.network_factory.get("transformer_num_heads", 4),
+                transformer_ff_dim=policy_cfg.network_factory.get("transformer_ff_dim", 512),
+                transformer_num_layers=policy_cfg.network_factory.get("transformer_num_layers", 4),
                 activation="swish",
             )
         except ImportError:

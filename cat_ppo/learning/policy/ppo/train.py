@@ -98,11 +98,13 @@ class TrainingMetricsLogger:
             return f"episode/{name}"
         return f"episode_metrics/{name}"
 
-    def update_rollout_metrics(self, metrics, dones, truncations, pf_ids=None):
+    def update_rollout_metrics(self, metrics, dones, truncations, pf_ids=None, action_std=None):
         dones = np.asarray(dones).astype(bool)
         truncations = np.asarray(truncations).astype(bool)
         pf_ids = None if pf_ids is None else np.asarray(pf_ids).astype(np.int32)
         self._num_steps += int(np.prod(dones.shape))
+        if action_std is not None:
+            self._rollout_buffer["training/action_std"].append(float(np.asarray(action_std)))
 
         done_count = int(np.sum(dones))
         if done_count > 0:
@@ -155,7 +157,7 @@ class TrainingMetricsLogger:
             mean_metrics[metric_name] = np.mean(self._metrics_buffer[metric_name])
             log_string += f"{f'{metric_name}:':>{pad}} {mean_metrics[metric_name]:.4f}\n"
         for metric_name in self._rollout_buffer:
-            key = f"rollout/{metric_name}"
+            key = metric_name if metric_name.startswith("training/") else f"rollout/{metric_name}"
             mean_metrics[key] = np.mean(self._rollout_buffer[metric_name])
             log_string += f"{f'{key}:':>{pad}} {mean_metrics[key]:.4f}\n"
         logging.info(log_string)
@@ -287,11 +289,26 @@ def _stack_trees(trees):
     return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *trees)
 
 
+def _mlp_network_factory_kwargs(network_factory_config: Any) -> dict[str, Any]:
+    kwargs = dict(network_factory_config)
+    network_kind = kwargs.pop("network_kind", "mlp")
+    if network_kind != "mlp":
+        raise ValueError(f"DAgger teacher network_kind={network_kind!r} is not supported")
+    for key in (
+        "transformer_embed_dim",
+        "transformer_num_heads",
+        "transformer_ff_dim",
+        "transformer_num_layers",
+    ):
+        kwargs.pop(key, None)
+    return kwargs
+
+
 def _assert_same_tree_shapes(label: str, expected: Any, actual: Any):
     expected_leaves, expected_def = jax.tree_util.tree_flatten(expected)
     actual_leaves, actual_def = jax.tree_util.tree_flatten(actual)
     if expected_def != actual_def:
-        raise ValueError(f"{label} pytree structure does not match the student policy")
+        raise ValueError(f"{label} pytree structure does not match")
     for idx, (expected_leaf, actual_leaf) in enumerate(zip(expected_leaves, actual_leaves)):
         if np.shape(expected_leaf) != np.shape(actual_leaf):
             raise ValueError(
@@ -313,7 +330,7 @@ def _assert_policy_shapes_for_dagger_teacher(
     expected_items, expected_def = jax.tree_util.tree_flatten_with_path(expected)
     actual_items, actual_def = jax.tree_util.tree_flatten_with_path(actual)
     if expected_def != actual_def:
-        raise ValueError(f"{label} pytree structure does not match the student policy")
+        raise ValueError(f"{label} pytree structure does not match")
 
     for idx, ((path, expected_leaf), (_, actual_leaf)) in enumerate(zip(expected_items, actual_items)):
         expected_shape = np.shape(expected_leaf)
@@ -359,6 +376,16 @@ def _teacher_observation(
     return teacher_obs
 
 
+def _teacher_observation_shape(
+    observation_size: Any,
+    teacher_obs_key: Optional[str],
+    teacher_privileged_obs_key: Optional[str],
+) -> Any:
+    return _teacher_observation(
+        observation_size, teacher_obs_key, teacher_privileged_obs_key
+    )
+
+
 def _uint64_lt(value: types.UInt64, other: int) -> jnp.ndarray:
     other_hi = jnp.uint32(other >> 32)
     other_lo = jnp.uint32(other & 0xFFFFFFFF)
@@ -371,6 +398,7 @@ def compute_dagger_loss(
     data: types.Transition,
     rng: jnp.ndarray,
     ppo_network: ppo_networks.PPONetworks,
+    teacher_ppo_network: ppo_networks.PPONetworks,
     teacher_normalizer_params: Any,
     teacher_policy_params: Any,
     num_teachers: int,
@@ -385,6 +413,7 @@ def compute_dagger_loss(
 ) -> Tuple[jnp.ndarray, types.Metrics]:
     del rng
     policy_apply = ppo_network.policy_network.apply
+    teacher_policy_apply = teacher_ppo_network.policy_network.apply
     value_apply = ppo_network.value_network.apply
     parametric_action_distribution = ppo_network.parametric_action_distribution
 
@@ -399,7 +428,7 @@ def compute_dagger_loss(
     )
 
     def teacher_apply(teacher_normalizer, teacher_policy):
-        return policy_apply(teacher_normalizer, teacher_policy, teacher_observation)
+        return teacher_policy_apply(teacher_normalizer, teacher_policy, teacher_observation)
 
     teacher_logits_all = jax.vmap(teacher_apply)(teacher_normalizer_params, teacher_policy_params)
     pf_id = data.extras["state_extras"]["pf_id"].astype(jnp.int32)
@@ -453,6 +482,7 @@ def compute_dagger_then_ppo_loss(
     rng: jnp.ndarray,
     dagger_phase: jnp.ndarray,
     ppo_network: ppo_networks.PPONetworks,
+    teacher_ppo_network: ppo_networks.PPONetworks,
     teacher_normalizer_params: Any,
     teacher_policy_params: Any,
     num_teachers: int,
@@ -475,6 +505,7 @@ def compute_dagger_then_ppo_loss(
             data,
             rng,
             ppo_network=ppo_network,
+            teacher_ppo_network=teacher_ppo_network,
             teacher_normalizer_params=teacher_normalizer_params,
             teacher_policy_params=teacher_policy_params,
             num_teachers=num_teachers,
@@ -740,12 +771,28 @@ def train(
     teacher_params = ()
     teacher_normalizer_params = None
     teacher_policy_params = None
+    teacher_ppo_network = None
     if use_dagger:
         loss_name = _cfg_get(dagger_config, "loss", "kl")
         if loss_name != "kl":
             raise ValueError(f"Unsupported DAgger loss: {loss_name!r}; only 'kl' is implemented")
         if not teacher_checkpoint_paths:
             raise ValueError("dagger_config.enable=True requires teacher_checkpoint_paths")
+        teacher_obs_key = _cfg_get(dagger_config, "teacher_obs_key", None)
+        teacher_privileged_obs_key = _cfg_get(
+            dagger_config, "teacher_privileged_obs_key", None
+        )
+        teacher_network_factory = _cfg_get(dagger_config, "teacher_network_factory", None)
+        if teacher_network_factory is None:
+            raise ValueError("dagger_config.teacher_network_factory must be set for DAgger")
+        teacher_ppo_network = ppo_networks.make_ppo_networks(
+            _teacher_observation_shape(
+                obs_shape, teacher_obs_key, teacher_privileged_obs_key
+            ),
+            env.action_size,
+            preprocess_observations_fn=normalize,
+            **_mlp_network_factory_kwargs(teacher_network_factory),
+        )
         teacher_params = tuple(checkpoint.load(path) for path in teacher_checkpoint_paths)
         teacher_normalizer_params = _stack_trees([params[0] for params in teacher_params])
         teacher_policy_params = _stack_trees([params[1] for params in teacher_params])
@@ -761,6 +808,7 @@ def train(
         loss_fn = functools.partial(
             compute_dagger_then_ppo_loss,
             ppo_network=ppo_network,
+            teacher_ppo_network=teacher_ppo_network,
             teacher_normalizer_params=teacher_normalizer_params,
             teacher_policy_params=teacher_policy_params,
             num_teachers=len(teacher_checkpoint_paths),
@@ -919,6 +967,16 @@ def train(
         assert data.discount.shape[1:] == (unroll_length,)
 
         if log_training_metrics:  # log unroll metrics
+            rollout_logits = ppo_network.policy_network.apply(
+                training_state.normalizer_params,
+                training_state.params.policy,
+                data.observation,
+            )
+            action_std = jnp.mean(
+                ppo_network.parametric_action_distribution.create_dist(
+                    rollout_logits
+                ).scale
+            )
             if use_dagger:
                 jax.debug.callback(
                     metrics_aggregator.update_rollout_metrics,
@@ -926,6 +984,7 @@ def train(
                     data.extras["state_extras"]["episode_done"],
                     data.extras["state_extras"]["truncation"],
                     data.extras["state_extras"]["pf_id"],
+                    action_std,
                 )
             else:
                 jax.debug.callback(
@@ -933,6 +992,8 @@ def train(
                     data.extras["state_extras"]["episode_metrics"],
                     data.extras["state_extras"]["episode_done"],
                     data.extras["state_extras"]["truncation"],
+                    None,
+                    action_std,
                 )
 
         # Update normalization params and normalize observations.
@@ -1014,13 +1075,12 @@ def train(
         value=ppo_network.value_network.init(key_value),
     )
     if use_dagger:
-        teacher_obs_key = _cfg_get(dagger_config, "teacher_obs_key", None)
+        teacher_init_policy = teacher_ppo_network.policy_network.init(key_policy)
         for teacher_idx, loaded_params in enumerate(teacher_params):
-            _assert_policy_shapes_for_dagger_teacher(
+            _assert_same_tree_shapes(
                 f"DAgger teacher {teacher_idx} policy params",
-                init_params.policy,
+                teacher_init_policy,
                 loaded_params[1],
-                allow_input_dim_mismatch=teacher_obs_key is not None,
             )
 
     obs_shape = jax.tree_util.tree_map(

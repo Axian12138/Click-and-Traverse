@@ -1,4 +1,5 @@
 .history
+.env
 /*.sh
 MUJOCO_LOG.TXT
 

@@ -151,4 +151,4 @@ def better_mesh(spacing, obs_mask): # for mujoco visualization
     return mesh
 
 if __name__ == "__main__":
-    generate_typical_obstacle('side-hurdle4')
+    generate_typical_obstacle('side-hurdle-crouch2')

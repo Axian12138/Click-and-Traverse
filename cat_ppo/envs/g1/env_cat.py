@@ -1111,16 +1111,16 @@ class G1CatEnv(G1LocoEnv):
             "smoothness_joint": self._cost_smoothness_joint(data, info["last_joint_vel"]),
             "smoothness_action": self._cost_smoothness_action(action, info["last_act"], info["last_last_act"]),
             # field
-            # "headgf": self._re_gf0(info["headgf"], info["head_vel"], info["headdf"], (move_flag[None]<0.5) | (info["head_pos"][...,0] > 1.5), tau=0.5),
-            # "feetgf": self._re_gf0(info["feetgf"], info["feet_vel"], info["feetdf"], (move_flag[None]<0.5) | (info["gait_mask"] == 1) | (info["feet_pos"][...,0] > 1.5), tau=0.3),
-            # "handsgf": self._re_gf0(info["handsgf"], info["hands_vel"], info["handsdf"], (move_flag[None]<0.5) | (info["hands_pos"][...,0] > 1.5), tau=0.5),
+            "headgf": self._re_gf0(info["headgf"], info["head_vel"], info["headdf"], (move_flag[None]<0.5) | (info["head_pos"][...,0] > 1.5), tau=0.5),
+            "feetgf": self._re_gf0(info["feetgf"], info["feet_vel"], info["feetdf"], (move_flag[None]<0.5) | (info["gait_mask"] == 1) | (info["feet_pos"][...,0] > 1.5), tau=0.3),
+            "handsgf": self._re_gf0(info["handsgf"], info["hands_vel"], info["handsdf"], (move_flag[None]<0.5) | (info["hands_pos"][...,0] > 1.5), tau=0.5),
 
-            "headgf": self._re_gf0(info["headgf"], info["head_vel"], info["headdf"],
-                                   (move_flag[None] < 0.5) , tau=0.5),
-            "feetgf": self._re_gf0(info["feetgf"], info["feet_vel"], info["feetdf"],
-                                   (move_flag[None] < 0.5) | (info["gait_mask"] == 1) , tau=0.3),
-            "handsgf": self._re_gf0(info["handsgf"], info["hands_vel"], info["handsdf"],
-                                    (move_flag[None] < 0.5) , tau=0.5),
+            # "headgf": self._re_gf0(info["headgf"], info["head_vel"], info["headdf"],
+            #                        (move_flag[None] < 0.5) , tau=0.5),
+            # "feetgf": self._re_gf0(info["feetgf"], info["feet_vel"], info["feetdf"],
+            #                        (move_flag[None] < 0.5) | (info["gait_mask"] == 1) , tau=0.3),
+            # "handsgf": self._re_gf0(info["handsgf"], info["hands_vel"], info["handsdf"],
+            #                         (move_flag[None] < 0.5) , tau=0.5),
             "headdf": self._re_sdf(info["headdf"]),
             "feetdf": self._re_sdf(info["feetdf"]),
             "handsdf": self._re_sdf(info["handsdf"]), # NOTE
@@ -1208,6 +1208,19 @@ class G1CatEnv(G1LocoEnv):
 
         re_gf = - penalty
         return jp.mean(re_gf) 
+
+
+    def _cost_foot_clearance(
+            self, data: mjx.Data, tar_foot_height: jax.Array, gait_flag: jax.Array, move_flag: jax.Array
+    ) -> jax.Array:
+        foot_pos = data.site_xpos[self._feet_site_id]
+        foot_z = foot_pos[..., -1]  # shape [n_foot]
+        swing_des = jp.float32(gait_flag == -1)
+        foot_z_tar = self._config.reward_config.foot_height_stance + tar_foot_height
+        z_error = jp.maximum(foot_z_tar - foot_z, 0.0)
+        cost = jp.sum(swing_des * jp.square(z_error))
+        cost *= move_flag
+        return cost
 
     def _reward_tracking_root_field(self, cmd_vel: jax.Array, local_lin_vel: jax.Array) -> jax.Array:
         lin_vel_error = jp.sum(jp.square(cmd_vel[:2] - local_lin_vel[:2]))

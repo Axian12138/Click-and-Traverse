@@ -11,6 +11,7 @@ Collision-Free Humanoid Traversal in Cluttered Indoor Scenes
 
 ## News
 
+- 2026/07/05: We release **generalist v1**. This is the first generalist checkpoint for community testing; we will keep improving v2 based on feedback.
 - 2026/05/20: We release the **specialist-to-generalist policy distillation code**.
 - 2026/03/07: We release the **real-world deployment code** of CAT! Please refer to deploy/Click-and-Traverse-SLAM for details.
 - 2026/01/08: We release the official implementation of CAT!
@@ -60,7 +61,7 @@ In this repository, we present:
 - [X] 🚀 Real-world deployment code
 - [X] 🧩 Real-to-sim contruction for sim2sim test and real-scene finetuning
 - [X] 🧩 Specialist-to-generalist policy distillation code
-- [ ] 🗂️ Pre-trained generalist models
+- [X] 🗂️ Pre-trained generalist v1 model
 - [ ] 🗂️ Expanded scene datasets
 
 ---
@@ -133,11 +134,13 @@ Click-and-Traverse/
 ├── data/                           # Assets, logs (checkpoints)
 │   ├── assets/
 │   |   ├── mujoco_menagerie/       # after mj_playground_init
-│   |   ├── RandObs/                # random obstacles
+│   |   ├── RandObs/                # random obstacles, downloaded or generated
+│   |   ├── RandObsEval/            # optional held-out random obstacles, generated locally
 │   |   ├── TypiObs/                # typical obstacles
 │   |   └── unitree_g1/             # humanoid assets
 │   └── logs/
 |       └── G1_mj_axis/             # downloaded checkpoints
+├── eval_scene_specs/               # lightweight evaluation scene generation specs
 ├── deploy/                         # Real-world deployment
 │   ├── gx_loco_deploy/             # deploy helpers
 │   ├── scripts/
@@ -206,6 +209,17 @@ Parameters:
 
 ## Traversal Skill Learning
 
+### Generalist v1 Release
+
+We provide **generalist v1** as the first broadly usable policy distilled from specialist teachers. This version is intended for testing and feedback collection. We expect to release improved v2 checkpoints after collecting more failure cases and evaluation results from the community.
+
+The current generalist v1 training split is the random-obstacle training set:
+
+- `data/assets/RandObs/`
+- 42 generated scenes in the current release.
+- The exact scene list and training configuration can be found in the released checkpoint config, e.g. `data/logs/G1_mj_v2_axis/07020635_G1CatDagger_dagger_v8allD8RandObsX4xG2p0xL1p0xO1p0xT0p0/checkpoints/config.json`.
+
+
 ### Training Specialist
 
 ```bash
@@ -261,10 +275,10 @@ python -m cat_ppo.eval.brax2onnx \
 
 ### Evaluation
 
-To evaluate the model without privileged observation, run:
+For interactive single-scene playback without privileged observation, run:
 
 ```bash
-python -m cat_ppo.eval.mj_onnx_play --task G1Cat --exp_name 12051223_G1LocoPFR10_OdonoiseSlowV2_xP2xMxK00xside3 --obs_path data/assets/TypiObs/side3
+python -m cat_ppo.eval.mj_onnx_play --task G1Cat --exp_name 07020635_G1CatDagger_dagger_v8allD8RandObsX4xG2p0xL1p0xO1p0xT0p0 --obs_path data/assets/RandObsEval/D9G2L1O2S110
 ```
 
 To evaluate the model with privileged observation, run:
@@ -272,6 +286,46 @@ To evaluate the model with privileged observation, run:
 ```bash
 python -m cat_ppo.eval.mj_onnx_play --task G1CatPri --pri --exp_name G1CatPri_side1 --obs_path data/assets/TypiObs/side1
 ```
+
+For batch success-rate evaluation without visualization, use `mj_onnx_test`:
+
+```bash
+python -m cat_ppo.eval.mj_onnx_test \
+  --task G1Cat \
+  --exp-name 07020635_G1CatDagger_dagger_v8allD8RandObsX4xG2p0xL1p0xO1p0xT0p0 \
+  --obs-root data/assets/RandObs \
+  --episodes 1 \
+  --output-json output_logs/mj_onnx_eval_randobs_train_freshenv.json
+```
+
+To evaluate a held-out test set:
+
+```bash
+python -m cat_ppo.eval.mj_onnx_test \
+  --task G1Cat \
+  --exp-name 07020635_G1CatDagger_dagger_v8allD8RandObsX4xG2p0xL1p0xO1p0xT0p0 \
+  --manifest data/assets/RandObsEval/manifest.json \
+  --episodes 1 \
+  --output-json output_logs/mj_onnx_eval_randobs_eval_freshenv.json
+```
+
+If `data/assets/RandObsEval/` is not available, generate it locally from the lightweight spec in `eval_scene_specs/randobs_eval_v1.yaml`. Scene names are determined by the generation parameters, so users can recreate the same split on their own machines:
+
+```bash
+python -m cat_ppo.eval.mj_onnx_test \
+  --task G1Cat \
+  --generate-eval-set \
+  --generate-only \
+  --eval-root data/assets/RandObsEval \
+  --eval-difficulties 0.6 0.7 0.8 0.9 \
+  --eval-seeds 101 102 103 104 105 106 107 108 109 110 \
+  --eval-ground-counts 1 2 3 \
+  --eval-lateral-counts 1 3 \
+  --eval-overhead-counts 1 2
+```
+
+The command writes generated assets to `data/assets/RandObsEval/` and creates `data/assets/RandObsEval/manifest.json`, which can then be passed to the evaluation command above.
+
 
 ---
 
